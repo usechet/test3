@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+
+  traefik:
+    image: traefik:v2.11
+    command:
+      - --api.dashboard=true
+      - --providers.docker=true
+      - --entrypoints.web.address=:80
+      - --providers.docker.exposedbydefault=false
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - traefik_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`localhost`) && PathPrefix(`/traefik`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.entrypoints=web"
+
+  api:
+    build: ./api
+    volumes:
+      - images-data:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - rabbitmq
+    networks:
+      - traefik_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`localhost`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.api.entrypoints=web"
+      - "traefik.http.middlewares.api-stripper.stripprefix.prefixes=/api"
+      - "traefik.http.routers.api.middlewares=api-stripper"
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: user
+      RABBITMQ_DEFAULT_PASS: pass
+    ports:
+      - "5672:5672"     # AMQP
+    networks:
+      - traefik_network
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rabbitmq.rule=Host(`localhost`) && PathPrefix(`/rabbitmq`)"
+      - "traefik.http.routers.rabbitmq.entrypoints=web"
+      - "traefik.http.routers.rabbitmq.middlewares=rabbitmq-auth,rabbitmq-strip"
+      - "traefik.http.middlewares.rabbitmq-auth.basicauth.users=tfue:$apr1$4q3lozkr$Z5nFXXizZ6hr7SgGcuCDj0"
+      - "traefik.http.middlewares.rabbitmq-strip.stripprefix.prefixes=/rabbitmq"
+
+  resize:
+    build: ./workers
+    command: python resize.py
+    volumes:
+      - images-data:/data
+    depends_on:
+      - rabbitmq
+    networks:
+      - traefik_network
+
+  watermark:
+    build: ./workers
+    command: python watermark.py
+    volumes:
+      - images-data:/data
+    depends_on:
+      - rabbitmq
+    networks:
+      - traefik_network
+
+  detection:
+    build: ./workers
+    command: python detection.py
+    volumes:
+      - images-data:/data
+    depends_on:
+      - rabbitmq
+    networks:
+      - traefik_network
+
+  notify:
+    build: ./publish
+    command: python notify.py
+    depends_on:
+      - rabbitmq
+    networks:
+      - traefik_network
+
+networks:
+  traefik_network:
+    driver: bridge
+
+volumes:
+  images-data:
+  rabbitmq-data:
